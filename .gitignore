@@ -140,3 +140,8 @@ dmypy.json
 .idea
 modules/
 *.swp
+.vscode/settings.json
+credentials.json
+SEOvermind.py
+seo-smooth-1519247814490-339bc0b1a025.json
+.vscode/settings.json
