@@ -2,9 +2,13 @@
   "python.formatting.provider": "none",
   "editor.formatOnSave": true,
   "editor.codeActionsOnSave": {
-      "source.organizeImports": true,
+    "source.organizeImports": true,
   },
   "[python]": {
     "editor.defaultFormatter": "ms-python.black-formatter"
   },
+  "python.analysis.extraPaths": [
+    "./llama_index/embeddings",
+    "./llama_index/vector_stores"
+  ],
 }
