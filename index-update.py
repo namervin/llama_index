@@ -1,0 +1,1 @@
+index.update(doc_chunks[0])
