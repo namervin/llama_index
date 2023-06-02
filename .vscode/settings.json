@@ -5,10 +5,11 @@
     "source.organizeImports": true,
   },
   "[python]": {
-    "editor.defaultFormatter": "ms-python.black-formatter"
+    "editor.defaultFormatter": "ms-python.python"
   },
   "python.analysis.extraPaths": [
     "./llama_index/embeddings",
     "./llama_index/vector_stores"
   ],
+  "python.analysis.typeCheckingMode": "off",
 }
