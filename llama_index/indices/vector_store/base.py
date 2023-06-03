@@ -12,6 +12,7 @@ from llama_index.data_structs.node import ImageNode, IndexNode, Node
 from llama_index.indices.base import BaseGPTIndex
 from llama_index.indices.base_retriever import BaseRetriever
 from llama_index.indices.service_context import ServiceContext
+from llama_index.storage.docstore.types import RefDocInfo
 from llama_index.storage.storage_context import StorageContext
 from llama_index.token_counter.token_counter import llm_token_counter
 from llama_index.vector_stores.types import NodeWithEmbedding, VectorStore
@@ -22,6 +23,8 @@ class GPTVectorStoreIndex(BaseGPTIndex[IndexDict]):
 
     Args:
         use_async (bool): Whether to use asynchronous calls. Defaults to False.
+        store_nodes_override (bool): set to True to always store Node objects in index
+            store and document store even if vector store keeps text. Defaults to False
     """
 
     index_struct_cls = IndexDict
@@ -33,10 +36,12 @@ class GPTVectorStoreIndex(BaseGPTIndex[IndexDict]):
         service_context: Optional[ServiceContext] = None,
         storage_context: Optional[StorageContext] = None,
         use_async: bool = False,
+        store_nodes_override: bool = False,
         **kwargs: Any,
     ) -> None:
         """Initialize params."""
         self._use_async = use_async
+        self._store_nodes_override = store_nodes_override
         super().__init__(
             nodes=nodes,
             index_struct=index_struct,
@@ -53,7 +58,9 @@ class GPTVectorStoreIndex(BaseGPTIndex[IndexDict]):
         # NOTE: lazy import
         from llama_index.indices.vector_store.retrievers import VectorIndexRetriever
 
-        return VectorIndexRetriever(self, **kwargs)
+        return VectorIndexRetriever(
+            self, doc_ids=list(self.index_struct.nodes_dict.values()), **kwargs
+        )
 
     def _get_node_embedding_results(
         self, nodes: Sequence[Node]
@@ -138,10 +145,17 @@ class GPTVectorStoreIndex(BaseGPTIndex[IndexDict]):
 
         # if the vector store doesn't store text, we need to add the nodes to the
         # index struct and document store
-        if not self._vector_store.stores_text:
+        if not self._vector_store.stores_text or self._store_nodes_override:
             for result, new_id in zip(embedding_results, new_ids):
                 index_struct.add_node(result.node, text_id=new_id)
                 self._docstore.add_documents([result.node], allow_update=True)
+        else:
+            # NOTE: if the vector store keeps text,
+            # we only need to add image and index nodes
+            for result, new_id in zip(embedding_results, new_ids):
+                if isinstance(result.node, (ImageNode, IndexNode)):
+                    index_struct.add_node(result.node, text_id=new_id)
+                    self._docstore.add_documents([result.node], allow_update=True)
 
     def _add_nodes_to_index(
         self,
@@ -155,7 +169,7 @@ class GPTVectorStoreIndex(BaseGPTIndex[IndexDict]):
         embedding_results = self._get_node_embedding_results(nodes)
         new_ids = self._vector_store.add(embedding_results)
 
-        if not self._vector_store.stores_text:
+        if not self._vector_store.stores_text or self._store_nodes_override:
             # NOTE: if the vector store doesn't store text,
             # we need to add the nodes to the index struct and document store
             for result, new_id in zip(embedding_results, new_ids):
@@ -204,7 +218,68 @@ class GPTVectorStoreIndex(BaseGPTIndex[IndexDict]):
         self._insert(nodes, **insert_kwargs)
         self._storage_context.index_store.add_index_struct(self._index_struct)
 
-    def _delete(self, doc_id: str, **delete_kwargs: Any) -> None:
-        """Delete a document."""
-        self._index_struct.delete(doc_id)
-        self._vector_store.delete(doc_id)
+    def _delete_node(self, doc_id: str, **delete_kwargs: Any) -> None:
+        pass
+
+    def delete_nodes(
+        self,
+        doc_ids: List[str],
+        delete_from_docstore: bool = False,
+        **delete_kwargs: Any,
+    ) -> None:
+        """Delete a list of nodes from the index.
+
+        Args:
+            doc_ids (List[str]): A list of doc_ids from the nodes to delete
+
+        """
+        raise NotImplementedError(
+            "Vector indices currently only support delete_ref_doc, which "
+            "deletes nodes using the ref_doc_id of ingested documents."
+        )
+
+    def delete_ref_doc(
+        self, ref_doc_id: str, delete_from_docstore: bool = False, **delete_kwargs: Any
+    ) -> None:
+        """Delete a document and it's nodes by using ref_doc_id."""
+        self._vector_store.delete(ref_doc_id)
+
+        # delete from index_struct only if needed
+        if not self._vector_store.stores_text or self._store_nodes_override:
+            ref_doc_info = self._docstore.get_ref_doc_info(ref_doc_id)
+            if ref_doc_info is not None:
+                for doc_id in ref_doc_info.doc_ids:
+                    self._index_struct.delete(doc_id)
+
+        # delete from docstore only if needed
+        if (
+            not self._vector_store.stores_text or self._store_nodes_override
+        ) and delete_from_docstore:
+            self._docstore.delete_ref_doc(ref_doc_id, raise_error=False)
+
+        self._storage_context.index_store.add_index_struct(self._index_struct)
+
+    @property
+    def ref_doc_info(self) -> Dict[str, RefDocInfo]:
+        """Retrieve a dict mapping of ingested documents and their nodes+metadata."""
+        if not self._vector_store.stores_text or self._store_nodes_override:
+            node_doc_ids = list(self.index_struct.nodes_dict.values())
+            nodes = self.docstore.get_nodes(node_doc_ids)
+
+            all_ref_doc_info = {}
+            for node in nodes:
+                ref_doc_id = node.ref_doc_id
+                if not ref_doc_id:
+                    continue
+
+                ref_doc_info = self.docstore.get_ref_doc_info(ref_doc_id)
+                if not ref_doc_info:
+                    continue
+
+                all_ref_doc_info[ref_doc_id] = ref_doc_info
+            return all_ref_doc_info
+        else:
+            raise NotImplementedError(
+                "Vector store integrations that store text in the vector store are "
+                "not supported by ref_doc_info yet."
+            )
